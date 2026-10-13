@@ -3119,6 +3119,7 @@ class Service:
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
         self.shared_path = None                       # where they are kept between starts (next to the config)
         self.config_effort = None                     # #1641: the config's "reasoning_effort": the level for requests with none
+        self.config_effort_tool = None                # the config's "reasoning_effort_tool_result": the level for a turn after a tool result
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
         self.fifo = threading.Lock()
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
@@ -3636,6 +3637,8 @@ class Service:
         """The request with the shared thinking level and max tokens filled in where it has none of its own."""
         s = self.shared
         effort = self.effort_default()
+        if self.config_effort_tool and not s.get("reasoning_effort") and after_tool_result(req.get("messages"), api):
+            effort = self.config_effort_tool          # a tool result is read at this level unless the request names one
         if not s and not effort:
             return req
         req = dict(req)
@@ -6626,6 +6629,18 @@ def lift_reasoning_effort_arg(cfg: dict) -> None:
 SAMPLING_ALIASES = {"repeat_penalty": "repetition_penalty", "repeat_last_n": "penalty_last_n"}
 
 
+def after_tool_result(messages, api: str) -> bool:
+    """The request's last message is a tool's result: OpenAI's role "tool", or Anthropic's user turn of tool_result blocks."""
+    if not isinstance(messages, list) or not messages or not isinstance(messages[-1], dict):
+        return False
+    last = messages[-1]
+    if api == "openai":
+        return last.get("role") == "tool"
+    content = last.get("content")
+    return last.get("role") == "user" and isinstance(content, list) and \
+        any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+
+
 def sampling_defaults_from_config(cfg: dict) -> dict:
     """The run config's optional `sampling` block: defaults for the sampling fields a request leaves out, so
     a plain client gets configured sampling instead of greedy.  Supported: temperature, top_p, top_k, min_p,
@@ -6979,6 +6994,15 @@ def main() -> int:
         if svc.config_effort:
             print(f"[strata] thinking level: {svc.config_effort} (reasoning_effort in the config; a request, or the "
                   "Chat settings shared with other apps, can set its own)", flush=True)
+    if cfg.get("reasoning_effort_tool_result") is not None:   # the thinking level of a turn after a tool result
+        try:
+            svc.config_effort_tool = clean_shared_defaults(
+                {"reasoning_effort": cfg["reasoning_effort_tool_result"]}).get("reasoning_effort")
+        except ValueError as e:
+            raise SystemExit(f"[strata] config reasoning_effort_tool_result: {e}")
+        if svc.config_effort_tool:
+            print(f"[strata] thinking level after a tool result: {svc.config_effort_tool} (reasoning_effort_tool_result "
+                  "in the config; a request can set its own)", flush=True)
     svc.codex_thread_titles = cfg.get("codex_thread_titles") is True    # #923: opt-in, off by default
     svc.codex_compaction_cache = cfg.get("codex_compaction_cache") is True   # #924: opt-in, off by default
     try:

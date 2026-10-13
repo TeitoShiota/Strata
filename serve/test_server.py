@@ -2694,6 +2694,26 @@ class ConfigReasoningEffort(unittest.TestCase):
         svc = self.svc("low", {"reasoning_effort": "high"})
         self.assertEqual(svc.with_shared({}, "openai")["reasoning_effort"], "high")
 
+    def test_tool_result_level(self):
+        svc = self.svc("medium")
+        svc.config_effort_tool = "low"
+        user = [{"role": "user", "content": "hi"}]
+        tool = user + [{"role": "assistant", "content": ""}, {"role": "tool", "content": "x"}]
+        result = [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a", "content": "x"}]}]
+        self.assertEqual(svc.with_shared({"messages": user}, "openai")["reasoning_effort"], "medium")
+        self.assertEqual(svc.with_shared({"messages": tool}, "openai")["reasoning_effort"], "low")
+        self.assertEqual(svc.with_shared({"messages": tool, "reasoning_effort": "high"}, "openai")["reasoning_effort"],
+                         "high")                                       # the request's own level wins
+        self.assertEqual(svc.with_shared({"messages": result}, "anthropic")["output_config"], {"effort": "low"})
+        self.assertNotIn("output_config", svc.with_shared({"messages": result, "thinking": {"type": "enabled"}},
+                                                          "anthropic"))
+        svc.shared = {"reasoning_effort": "high"}                       # the shared Chat settings still win
+        self.assertEqual(svc.with_shared({"messages": tool}, "openai")["reasoning_effort"], "high")
+        only = self.svc()
+        only.config_effort_tool = "low"                                 # without a config default: tool turns only
+        self.assertNotIn("reasoning_effort", only.with_shared({"messages": user}, "openai"))
+        self.assertEqual(only.with_shared({"messages": tool}, "openai")["reasoning_effort"], "low")
+
     def test_the_flag_in_args_becomes_the_key(self):
         from serve.server import lift_reasoning_effort_arg
         for args in (["--ctx", "4096", "--reasoning-effort", "low"], ["--reasoning-effort=low", "--ctx", "4096"]):
